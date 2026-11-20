@@ -1,15 +1,11 @@
 using UnityEngine;
 
-public class SmartObject
+public class SmartObject : MonoBehaviour
 {
-    public string Name;
-    public Advertisement[] Ads;
-    public float Duration;
+    public ActionData[] actions;
+    public Transform interactionPoint;
 
-    public SmartObject(string name, float duration, params Advertisement[] ads)
-    {
-        Name = name;
-        Ads = ads;
-        Duration = duration;
-    }
+    public Sim occupant;
+
+    public bool IsFree => occupant == null;
 }

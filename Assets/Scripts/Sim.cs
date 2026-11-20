@@ -1,156 +1,87 @@
-using System;
 using System.Collections.Generic;
 using UnityEngine;
-using System.Linq;
-using System.Collections;
 
 public class Sim : MonoBehaviour
 {
-    public int inAct;
-    const float Emergency = 15f;
-    const float MinAcceptableScore = 5f; //The threshold for an interaction to be relevant
-    const float IdleMinutes = 10f;
-    private const int SimulationTime = 24 * 60 * 60;
+    public float minAcceptableScore = 5f; //The threshold for an interaction to be relevant
+    public float distanceFalloff = 0.1f;
 
-    //Hard-coded needs list
-    private Dictionary<string, Need> Needs = new Dictionary<string, Need>
-    {
-        { "Hunger", new Need(60f, 0.15f, UrgencyCurve.Quadratic) },
-        { "Energy", new Need(60f, 0.15f, UrgencyCurve.Quadratic) },
-        { "Bladder", new Need(60f, 0.15f, UrgencyCurve.Quadratic) },
-        { "Fun", new Need(60f, 0.15f, UrgencyCurve.Linear) },
-        { "Social", new Need(60f, 0.15f, UrgencyCurve.Linear) }
-    };
+    public Needs[] needTypes;
 
-    //Hard-coded world settings
-    //Every object only has one interaction with a duration and advertised changes in needs
-    static readonly SmartObject[] Objects =
-    {
-        new SmartObject("Fridge",   20,  new Advertisement("Hunger", 40f)),
-        new SmartObject("Bed",      240, new Advertisement("Energy", 50f)),
-        new SmartObject("Toilet",   5,   new Advertisement("Bladder", 60f)),
-        new SmartObject("TV",       45,  new Advertisement("Fun", 30f)),
-        new SmartObject("Computer", 60,  new Advertisement("Fun", 40f), new Advertisement("Energy", -10f)),
-        new SmartObject("Phone",    20,  new Advertisement("Social", 25f), new Advertisement("Fun", 10f))
-    };
+    public Dictionary<Needs, float> needs = new Dictionary<Needs, float>();
 
-    // Start is called once before the first execution of Update after the MonoBehaviour is created
-    void Start()
+    void Awake()
     {
-        StartCoroutine(Run());
+        foreach (Needs needType in needTypes)
+        {
+            needs[needType] = needType.startValue;
+        }
+        ;
     }
 
-    IEnumerator Run()
+    public void Decay(float minutes)
     {
-        Sim sim = new Sim();
-        SmartObject current = Choose(sim);
-
-        Debug.Log("***NEW ACT: {0}" + current != null ? current.Name : "Idle");
-
-
-        for (int t = 0; t < SimulationTime; t++)
+        foreach (Needs need in needTypes)
         {
-            if (Interrupt(sim, current) || Done(current, sim.inAct))
-            {
-                SmartObject next = Choose(sim);
-
-                if (next != current)
-                {
-                    current = next;
-                    sim.inAct = 0;
-
-                    Debug.Log("***NEW ACT: {0}" + current != null ? current.Name : "Idle");
-
-                    yield return new WaitForSeconds(2.0f);
-                }
-            }
-
-            Debug.Log($"Hunger: {0} / Energy: {1} / Bladder {2} / Fun: {3} / Social: {4}" + 
-                                                                sim.Needs["Hunger"].Value + 
-                                                                sim.Needs["Energy"].Value + 
-                                                                sim.Needs["Bladder"].Value + 
-                                                                sim.Needs["Fun"].Value + 
-                                                                sim.Needs["Social"].Value);
-
-            yield return new WaitForSeconds(0.2f);
-
-            sim.Tick(current);
-            sim.inAct++;
+            this.needs[need] = Mathf.Clamp(this.needs[need] - need.decayPerMinute * minutes, 0.0f, 100.0f);
         }
     }
 
-    void Tick(SmartObject smartObj)
+    public void Apply(ActionData action, float minutes)
     {
-        foreach (var n in Needs.Values) n.Value -= n.Decay;
-
-        if (smartObj != null)
+        foreach (var ad in action.Ads)
         {
-            foreach (var ad in smartObj.Ads)
-                Needs[ad.Need].Value += ad.Gain / smartObj.Duration;
+            needs[ad.need] = Mathf.Clamp(needs[ad.need] + ad.gain / action.durationMinutes * minutes, 0f, 100f);
         }
-
-        foreach (var n in Needs.Values) n.Value = Mathf.Clamp(n.Value, 0f, 100f);
     }
 
-    bool Done(SmartObject obj, int minutesInAct)
+    public float ScoreAction(ActionData action)
     {
-        return minutesInAct >= (obj?.Duration ?? IdleMinutes);
-    }
+        float score = 0;
 
-    bool Interrupt(Sim sim, SmartObject current)
-    {
-        foreach (var need in sim.Needs)
+        foreach (var ad in action.Ads)
         {
-            if ((need.Value.Value < Emergency) &&
-                (current == null || current.Ads.All(a => a.Need != need.Key)))
-                return true;
-        }
+            float value = needs[ad.need];
+            float gain = ad.gain > 0 ? Mathf.Min(ad.gain, 100f - value) : ad.gain;
 
-        return false;
-    }
-
-    SmartObject Choose(Sim sim)
-    {
-        SmartObject best = null;
-        float bestScore = MinAcceptableScore;
-
-        foreach (var obj in Objects)
-        {
-            float score = Score(sim, obj);
-            if (score > bestScore) { bestScore = score; best = obj; }
-        }
-        return best;
-    }
-
-    private float Score(Sim sim, SmartObject obj)
-    {
-        float score = 0f;
-
-        foreach (var ad in obj.Ads)
-        {
-            var need = sim.Needs[ad.Need];
-            float gain = ad.Gain > 0f ? Mathf.Min(ad.Gain, 100f - need.Value) : ad.Gain;
-
-            score += Urgency(need.Value, need.UrgencyCurve) * gain;
+            score += ad.need.Urgency(value) * gain;
         }
 
         return score;
     }
 
-    float Urgency(float need, UrgencyCurve curve)
+    public Choice? Choose()
     {
-        float lack = Mathf.Clamp(1 - need / 100f, 0f, 1f);
+        Choice? best = null;
+        float bestScore = minAcceptableScore;
 
-        switch (curve)
+        var smartObjects = FindObjectsByType<SmartObject>(FindObjectsSortMode.None);
+
+        foreach (SmartObject sObj in smartObjects)
         {
-            case UrgencyCurve.Linear:
-                return lack;
-            case UrgencyCurve.Quadratic:
-                return lack * lack;
-            default:
-                return lack;
-        }
-    }
+            if (sObj.gameObject == gameObject || !sObj.IsFree) continue;
 
-   
+
+            float dist = Vector3.Distance(transform.position, sObj.interactionPoint.position);
+
+            foreach (var action in sObj.actions)
+            {
+                float score = ScoreAction(action) / (1f + dist * distanceFalloff);
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = new Choice { smartObj = sObj, action = action, score = score };
+                }
+            }
+        }
+        return best;
+    }
+}
+
+public struct Choice
+{
+    public SmartObject smartObj;
+    public ActionData action;
+    public float score;
 }
